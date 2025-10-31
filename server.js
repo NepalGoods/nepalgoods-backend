@@ -21,12 +21,40 @@ app.get('/', (req, res) => {
     status: 'NepalGoods Backend is running!', 
     service: 'API Server',
     timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
     endpoints: {
       products: '/api/products',
+      stripeConfig: '/api/stripe-config',
       createPayment: '/api/create-payment-intent',
       saveOrder: '/api/save-order'
     }
   });
+});
+
+// ========== STRIPE CONFIG ENDPOINT ==========
+app.get('/api/stripe-config', (req, res) => {
+  try {
+    console.log('Fetching Stripe configuration...');
+    
+    if (!process.env.STRIPE_PUBLISHABLE_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'Stripe publishable key not configured'
+      });
+    }
+
+    res.json({
+      success: true,
+      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY
+    });
+    
+  } catch (error) {
+    console.error('Error fetching Stripe config:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch Stripe configuration'
+    });
+  }
 });
 
 // ========== PRODUCTS ENDPOINTS ==========
@@ -36,6 +64,15 @@ app.get('/api/products', async (req, res) => {
   try {
     console.log('Fetching products from Airtable...');
     
+    // Validate environment variables
+    if (!process.env.AIRTABLE_TOKEN || !process.env.AIRTABLE_BASE_ID) {
+      console.error('Airtable configuration missing');
+      return res.status(500).json({
+        success: false,
+        error: 'Server configuration error'
+      });
+    }
+
     const records = await base('Products').select({
       maxRecords: 100,
       view: 'Grid view'
@@ -100,6 +137,15 @@ app.post('/api/create-payment-intent', async (req, res) => {
     
     console.log('Creating payment intent for amount:', amount);
     
+    // Validate environment variables
+    if (!process.env.STRIPE_SECRET_KEY) {
+      console.error('Stripe secret key not configured');
+      return res.status(500).json({
+        success: false,
+        error: 'Payment system not configured'
+      });
+    }
+
     // Validate amount
     if (!amount || amount < 1) {
       return res.status(400).json({
@@ -111,7 +157,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(amount * 100), // Convert to cents
       currency: currency,
-      metadata: metadata,
+      metadata: metadata || {},
       automatic_payment_methods: {
         enabled: true,
       },
@@ -129,7 +175,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
     console.error('Error creating payment intent:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to create payment intent'
+      error: 'Failed to create payment intent: ' + error.message
     });
   }
 });
@@ -158,6 +204,15 @@ app.post('/api/save-order', async (req, res) => {
     } = req.body;
 
     console.log('Saving order to Airtable:', orderId);
+
+    // Validate environment variables
+    if (!process.env.AIRTABLE_TOKEN || !process.env.AIRTABLE_BASE_ID) {
+      console.error('Airtable configuration missing');
+      return res.status(500).json({
+        success: false,
+        error: 'Server configuration error'
+      });
+    }
 
     // Validate required fields
     if (!orderId || !customerName || !customerEmail || !orderItems) {
@@ -206,7 +261,7 @@ app.post('/api/save-order', async (req, res) => {
     console.error('Error saving order to Airtable:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to save order'
+      error: 'Failed to save order: ' + error.message
     });
   }
 });
@@ -238,7 +293,8 @@ app.listen(PORT, () => {
 🚀 NepalGoods Backend Server Started!
 📍 Port: ${PORT}
 🌍 Environment: ${process.env.NODE_ENV || 'development'}
-📦 Services: Stripe & Airtable Integrated
+🔐 Services: Stripe & Airtable Integrated
+✅ Environment Variables: ${process.env.AIRTABLE_TOKEN ? '✓ Airtable' : '✗ Airtable'} ${process.env.STRIPE_SECRET_KEY ? '✓ Stripe' : '✗ Stripe'}
 ✅ Ready to accept requests...
   `);
 });
