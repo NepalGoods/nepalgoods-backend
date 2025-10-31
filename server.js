@@ -8,7 +8,7 @@ const app = express();
 // Initialize services with environment variables
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-// FIXED: Initialize Airtable with proper configuration
+// FIXED: Initialize Airtable with proper configuration for newer versions
 const airtable = new Airtable({
   apiKey: process.env.AIRTABLE_TOKEN,
   endpointUrl: 'https://api.airtable.com'
@@ -79,16 +79,29 @@ app.get('/api/products', async (req, res) => {
     }
 
     console.log('Airtable Base ID:', process.env.AIRTABLE_BASE_ID ? '✓ Set' : '✗ Missing');
-    console.log('Airtable Token:', process.env.AIRTABLE_TOKEN ? '✓ Set' : '✗ Missing');
+    console.log('Airtable Token length:', process.env.AIRTABLE_TOKEN ? process.env.AIRTABLE_TOKEN.length : '✗ Missing');
 
-    const records = await base('Products').select({
-      maxRecords: 100,
-      view: 'Grid view'
-    }).firstPage();
+    // Use a simple fetch approach to avoid Airtable library issues
+    const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Products`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
 
-    console.log(`Found ${records.length} records from Airtable`);
+    if (!response.ok) {
+      throw new Error(`Airtable API error: ${response.status} ${response.statusText}`);
+    }
 
-    const products = records.map(record => {
+    const data = await response.json();
+    console.log(`Found ${data.records ? data.records.length : 0} records from Airtable`);
+
+    if (!data.records) {
+      throw new Error('No records found in Airtable response');
+    }
+
+    const products = data.records.map(record => {
       const fields = record.fields;
       
       // Get image URL with fallbacks
@@ -232,32 +245,47 @@ app.post('/api/save-order', async (req, res) => {
       });
     }
 
-    // Save to Airtable Sales table
-    const records = await base('Sales').create([
-      {
-        fields: {
-          'Order ID': orderId,
-          'Customer Name': customerName,
-          'Customer Email': customerEmail,
-          'Customer Phone': customerPhone || '',
-          'Shipping Address': shippingAddress,
-          'Order Items': JSON.stringify(orderItems),
-          'Subtotal': subtotal,
-          'Shipping': shipping,
-          'Tax': tax,
-          'Service Fee': serviceFee,
-          'Total': total,
-          'Payment Method': paymentMethod,
-          'Stripe Payment ID': stripePaymentId || '',
-          'Order Status': 'Paid',
-          'Order Date': new Date().toISOString(),
-          'Delivery Notes': deliveryNotes || '',
-          'Order Notes': orderNotes || ''
-        }
-      }
-    ]);
+    // Save to Airtable Sales table using direct API call
+    const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Sales`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        records: [
+          {
+            fields: {
+              'Order ID': orderId,
+              'Customer Name': customerName,
+              'Customer Email': customerEmail,
+              'Customer Phone': customerPhone || '',
+              'Shipping Address': shippingAddress,
+              'Order Items': JSON.stringify(orderItems),
+              'Subtotal': subtotal,
+              'Shipping': shipping,
+              'Tax': tax,
+              'Service Fee': serviceFee,
+              'Total': total,
+              'Payment Method': paymentMethod,
+              'Stripe Payment ID': stripePaymentId || '',
+              'Order Status': 'Paid',
+              'Order Date': new Date().toISOString(),
+              'Delivery Notes': deliveryNotes || '',
+              'Order Notes': orderNotes || ''
+            }
+          }
+        ]
+      })
+    });
 
-    const recordId = records[0].getId();
+    if (!response.ok) {
+      throw new Error(`Airtable API error: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    const recordId = result.records[0].id;
+    
     console.log('Order saved successfully to Airtable. Record ID:', recordId);
 
     res.json({ 
