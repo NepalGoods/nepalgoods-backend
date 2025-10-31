@@ -7,7 +7,12 @@ const app = express();
 
 // Initialize services with environment variables
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
-const airtable = new Airtable({ apiKey: process.env.AIRTABLE_TOKEN });
+
+// FIXED: Initialize Airtable with proper configuration
+const airtable = new Airtable({
+  apiKey: process.env.AIRTABLE_TOKEN,
+  endpointUrl: 'https://api.airtable.com'
+});
 const base = airtable.base(process.env.AIRTABLE_BASE_ID);
 
 // Middleware
@@ -69,14 +74,19 @@ app.get('/api/products', async (req, res) => {
       console.error('Airtable configuration missing');
       return res.status(500).json({
         success: false,
-        error: 'Server configuration error'
+        error: 'Server configuration error: Missing Airtable credentials'
       });
     }
+
+    console.log('Airtable Base ID:', process.env.AIRTABLE_BASE_ID ? '✓ Set' : '✗ Missing');
+    console.log('Airtable Token:', process.env.AIRTABLE_TOKEN ? '✓ Set' : '✗ Missing');
 
     const records = await base('Products').select({
       maxRecords: 100,
       view: 'Grid view'
     }).firstPage();
+
+    console.log(`Found ${records.length} records from Airtable`);
 
     const products = records.map(record => {
       const fields = record.fields;
@@ -116,14 +126,14 @@ app.get('/api/products', async (req, res) => {
       };
     });
 
-    console.log(`Successfully fetched ${products.length} products`);
+    console.log(`Successfully processed ${products.length} products`);
     res.json({ success: true, products });
     
   } catch (error) {
-    console.error('Error fetching products:', error);
+    console.error('Error fetching products from Airtable:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to fetch products'
+      error: 'Failed to fetch products from Airtable: ' + error.message
     });
   }
 });
