@@ -6,9 +6,13 @@ const cors = require('cors');
 const app = express();
 
 // Initialize services with environment variables
-// Use the exact variable names from your Heroku config
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
-const airtable = new Airtable({ apiKey: process.env.AIRTABLE_TOKEN });
+
+// FIXED: Initialize Airtable with proper configuration for newer versions
+const airtable = new Airtable({
+  apiKey: process.env.AIRTABLE_TOKEN,
+  endpointUrl: 'https://api.airtable.com'
+});
 const base = airtable.base(process.env.AIRTABLE_BASE_ID);
 
 // Middleware
@@ -27,8 +31,7 @@ app.get('/', (req, res) => {
       products: '/api/products',
       stripeConfig: '/api/stripe-config',
       createPayment: '/api/create-payment-intent',
-      saveOrder: '/api/save-order',
-      createOrder: '/api/orders'
+      saveOrder: '/api/save-order'
     }
   });
 });
@@ -71,16 +74,34 @@ app.get('/api/products', async (req, res) => {
       console.error('Airtable configuration missing');
       return res.status(500).json({
         success: false,
-        error: 'Server configuration error'
+        error: 'Server configuration error: Missing Airtable credentials'
       });
     }
 
-    const records = await base('Products').select({
-      maxRecords: 100,
-      view: 'Grid view'
-    }).firstPage();
+    console.log('Airtable Base ID:', process.env.AIRTABLE_BASE_ID ? '✓ Set' : '✗ Missing');
+    console.log('Airtable Token length:', process.env.AIRTABLE_TOKEN ? process.env.AIRTABLE_TOKEN.length : '✗ Missing');
 
-    const products = records.map(record => {
+    // Use a simple fetch approach to avoid Airtable library issues
+    const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Products`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Airtable API error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    console.log(`Found ${data.records ? data.records.length : 0} records from Airtable`);
+
+    if (!data.records) {
+      throw new Error('No records found in Airtable response');
+    }
+
+    const products = data.records.map(record => {
       const fields = record.fields;
       
       // Get image URL with fallbacks
@@ -118,14 +139,14 @@ app.get('/api/products', async (req, res) => {
       };
     });
 
-    console.log(`Successfully fetched ${products.length} products`);
+    console.log(`Successfully processed ${products.length} products`);
     res.json({ success: true, products });
     
   } catch (error) {
-    console.error('Error fetching products:', error);
+    console.error('Error fetching products from Airtable:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to fetch products'
+      error: 'Failed to fetch products from Airtable: ' + error.message
     });
   }
 });
@@ -149,7 +170,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
     }
 
     // Validate amount
-    if (!amount || amount < 50) { // Minimum 50 cents
+    if (!amount || amount < 1) {
       return res.status(400).json({
         success: false,
         error: 'Invalid amount'
@@ -157,12 +178,12 @@ app.post('/api/create-payment-intent', async (req, res) => {
     }
 
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: amount, // Already in cents from frontend
+      amount: Math.round(amount * 100), // Convert to cents
       currency: currency,
+      metadata: metadata || {},
       automatic_payment_methods: {
         enabled: true,
       },
-      metadata: metadata || {}
     });
 
     console.log('Payment intent created:', paymentIntent.id);
@@ -184,7 +205,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
 
 // ========== ORDER MANAGEMENT ==========
 
-// Save order to Airtable (legacy endpoint)
+// Save order to Airtable
 app.post('/api/save-order', async (req, res) => {
   try {
     const {
@@ -224,32 +245,47 @@ app.post('/api/save-order', async (req, res) => {
       });
     }
 
-    // Save to Airtable Sales table
-    const records = await base('Sales').create([
-      {
-        fields: {
-          'Order ID': orderId,
-          'Customer Name': customerName,
-          'Customer Email': customerEmail,
-          'Customer Phone': customerPhone || '',
-          'Shipping Address': shippingAddress,
-          'Order Items': JSON.stringify(orderItems),
-          'Subtotal': subtotal,
-          'Shipping': shipping,
-          'Tax': tax,
-          'Service Fee': serviceFee,
-          'Total': total,
-          'Payment Method': paymentMethod,
-          'Stripe Payment ID': stripePaymentId || '',
-          'Order Status': 'Paid',
-          'Order Date': new Date().toISOString(),
-          'Delivery Notes': deliveryNotes || '',
-          'Order Notes': orderNotes || ''
-        }
-      }
-    ]);
+    // Save to Airtable Sales table using direct API call
+    const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Sales`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        records: [
+          {
+            fields: {
+              'Order ID': orderId,
+              'Customer Name': customerName,
+              'Customer Email': customerEmail,
+              'Customer Phone': customerPhone || '',
+              'Shipping Address': shippingAddress,
+              'Order Items': JSON.stringify(orderItems),
+              'Subtotal': subtotal,
+              'Shipping': shipping,
+              'Tax': tax,
+              'Service Fee': serviceFee,
+              'Total': total,
+              'Payment Method': paymentMethod,
+              'Stripe Payment ID': stripePaymentId || '',
+              'Order Status': 'Paid',
+              'Order Date': new Date().toISOString(),
+              'Delivery Notes': deliveryNotes || '',
+              'Order Notes': orderNotes || ''
+            }
+          }
+        ]
+      })
+    });
 
-    const recordId = records[0].getId();
+    if (!response.ok) {
+      throw new Error(`Airtable API error: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    const recordId = result.records[0].id;
+    
     console.log('Order saved successfully to Airtable. Record ID:', recordId);
 
     res.json({ 
@@ -266,108 +302,6 @@ app.post('/api/save-order', async (req, res) => {
       error: 'Failed to save order: ' + error.message
     });
   }
-});
-
-// ========== NEW ORDER CREATION ENDPOINT ==========
-app.post('/api/orders', async (req, res) => {
-  try {
-    const {
-      customer,
-      shipping,
-      order,
-      payment,
-      notes
-    } = req.body;
-
-    console.log('Creating new order for:', customer.email);
-
-    // Validate environment variables
-    if (!process.env.AIRTABLE_TOKEN || !process.env.AIRTABLE_BASE_ID) {
-      console.error('Airtable configuration missing');
-      return res.status(500).json({
-        success: false,
-        error: 'Server configuration error'
-      });
-    }
-
-    // Generate order ID
-    const orderId = `NG${Date.now()}${Math.random().toString(36).substr(2, 5)}`.toUpperCase();
-
-    // Format shipping address
-    const shippingAddress = `${shipping.address}, ${shipping.city}, ${shipping.state} ${shipping.zip}, ${shipping.country}`;
-
-    // Save to Airtable Sales table
-    const records = await base('Sales').create([
-      {
-        fields: {
-          'Order ID': orderId,
-          'Customer Name': `${customer.firstName} ${customer.lastName}`,
-          'Customer Email': customer.email,
-          'Customer Phone': customer.phone || '',
-          'Shipping Address': shippingAddress,
-          'Order Items': JSON.stringify(order.items),
-          'Subtotal': order.subtotal,
-          'Shipping': order.shipping,
-          'Tax': order.tax,
-          'Service Fee': order.serviceFee,
-          'Total': order.total,
-          'Payment Method': payment.method,
-          'Stripe Payment ID': payment.id || '',
-          'Order Status': 'Paid',
-          'Order Date': new Date().toISOString(),
-          'Delivery Notes': shipping.notes || '',
-          'Order Notes': notes || ''
-        }
-      }
-    ]);
-
-    const recordId = records[0].getId();
-    console.log('Order saved successfully to Airtable. Record ID:', recordId);
-
-    res.json({ 
-      success: true, 
-      recordId,
-      orderId,
-      message: 'Order created successfully'
-    });
-    
-  } catch (error) {
-    console.error('Error creating order:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to create order: ' + error.message
-    });
-  }
-});
-
-// ========== STRIPE WEBHOOK ENDPOINT ==========
-app.post('/api/webhook', express.raw({type: 'application/json'}), (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    // You'll need to set STRIPE_WEBHOOK_SECRET in your environment variables
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET || 'whsec_default_secret');
-  } catch (err) {
-    console.error('Webhook signature verification failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  // Handle the event
-  switch (event.type) {
-    case 'payment_intent.succeeded':
-      const paymentIntent = event.data.object;
-      console.log('PaymentIntent was successful:', paymentIntent.id);
-      break;
-    case 'payment_intent.payment_failed':
-      const failedPayment = event.data.object;
-      console.log('Payment failed:', failedPayment.id);
-      break;
-    default:
-      console.log(`Unhandled event type: ${event.type}`);
-  }
-
-  res.json({received: true});
 });
 
 // ========== ERROR HANDLING ==========
@@ -398,11 +332,7 @@ app.listen(PORT, () => {
 📍 Port: ${PORT}
 🌍 Environment: ${process.env.NODE_ENV || 'development'}
 🔐 Services: Stripe & Airtable Integrated
-✅ Environment Variables: 
-   ${process.env.AIRTABLE_TOKEN ? '✓ Airtable Token' : '✗ Airtable Token'} 
-   ${process.env.AIRTABLE_BASE_ID ? '✓ Airtable Base ID' : '✗ Airtable Base ID'}
-   ${process.env.STRIPE_SECRET_KEY ? '✓ Stripe Secret Key' : '✗ Stripe Secret Key'}
-   ${process.env.STRIPE_PUBLISHABLE_KEY ? '✓ Stripe Publishable Key' : '✗ Stripe Publishable Key'}
+✅ Environment Variables: ${process.env.AIRTABLE_TOKEN ? '✓ Airtable' : '✗ Airtable'} ${process.env.STRIPE_SECRET_KEY ? '✓ Stripe' : '✗ Stripe'}
 ✅ Ready to accept requests...
   `);
 });
