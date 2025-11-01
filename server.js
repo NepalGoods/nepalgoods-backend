@@ -1,46 +1,39 @@
 const express = require('express');
 const Stripe = require('stripe');
+const Airtable = require('airtable');
 const cors = require('cors');
 
 const app = express();
 
-// Initialize Stripe with error handling
-let stripe;
-try {
-  if (!process.env.STRIPE_SECRET_KEY) {
-    console.error('❌ STRIPE_SECRET_KEY is not set in environment variables');
-  } else {
-    stripe = Stripe(process.env.STRIPE_SECRET_KEY);
-    console.log('✅ Stripe initialized successfully');
-  }
-} catch (error) {
-  console.error('❌ Failed to initialize Stripe:', error);
-}
+// Initialize services with environment variables
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+
+// FIXED: Initialize Airtable with proper configuration for newer versions
+const airtable = new Airtable({
+  apiKey: process.env.AIRTABLE_TOKEN,
+  endpointUrl: 'https://api.airtable.com'
+});
+const base = airtable.base(process.env.AIRTABLE_BASE_ID);
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// Health check endpoint with environment info
+// Health check endpoint
 app.get('/', (req, res) => {
-  const envInfo = {
-    stripe: {
-      configured: !!process.env.STRIPE_SECRET_KEY,
-      keyLength: process.env.STRIPE_SECRET_KEY ? process.env.STRIPE_SECRET_KEY.length : 0,
-      keyPrefix: process.env.STRIPE_SECRET_KEY ? process.env.STRIPE_SECRET_KEY.substring(0, 8) + '...' : 'Not set'
-    },
-    airtable: {
-      configured: !!(process.env.AIRTABLE_TOKEN && process.env.AIRTABLE_BASE_ID),
-      tokenLength: process.env.AIRTABLE_TOKEN ? process.env.AIRTABLE_TOKEN.length : 0,
-      baseId: process.env.AIRTABLE_BASE_ID ? 'Set' : 'Not set'
-    }
-  };
-
   res.json({ 
     status: 'NepalGoods Backend is running!', 
-    environment: envInfo,
-    timestamp: new Date().toISOString()
+    service: 'API Server',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    endpoints: {
+      products: '/api/products',
+      stripeConfig: '/api/stripe-config',
+      createPayment: '/api/create-payment-intent',
+      saveOrder: '/api/save-order',
+      orders: '/api/orders'
+    }
   });
 });
 
@@ -50,7 +43,6 @@ app.get('/api/stripe-config', (req, res) => {
     console.log('Fetching Stripe configuration...');
     
     if (!process.env.STRIPE_PUBLISHABLE_KEY) {
-      console.error('Stripe publishable key not configured');
       return res.status(500).json({
         success: false,
         error: 'Stripe publishable key not configured'
@@ -71,78 +63,9 @@ app.get('/api/stripe-config', (req, res) => {
   }
 });
 
-// ========== PAYMENT ENDPOINTS ==========
-
-// Create Stripe payment intent
-app.post('/api/create-payment-intent', async (req, res) => {
-  try {
-    const { amount, currency = 'usd', metadata } = req.body;
-    
-    console.log('Creating payment intent for amount:', amount, 'cents');
-    
-    // Validate Stripe initialization
-    if (!stripe) {
-      console.error('Stripe not initialized - check STRIPE_SECRET_KEY');
-      return res.status(500).json({
-        success: false,
-        error: 'Payment system not configured properly'
-      });
-    }
-
-    // Validate amount
-    if (!amount || amount < 1) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid amount: ' + amount
-      });
-    }
-
-    console.log('Creating Stripe payment intent with:', {
-      amount,
-      currency,
-      metadata
-    });
-
-    // Create payment intent
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: amount, // Amount is already in cents from frontend
-      currency: currency,
-      metadata: metadata || {},
-      automatic_payment_methods: {
-        enabled: true,
-      },
-    });
-
-    console.log('✅ Payment intent created successfully:', paymentIntent.id);
-    
-    res.json({ 
-      success: true, 
-      clientSecret: paymentIntent.client_secret,
-      paymentIntentId: paymentIntent.id
-    });
-    
-  } catch (error) {
-    console.error('❌ Error creating payment intent:', error);
-    
-    // More detailed error information
-    let errorMessage = 'Failed to create payment intent';
-    if (error.type === 'StripeInvalidRequestError') {
-      errorMessage = 'Invalid Stripe request: ' + error.message;
-    } else if (error.type === 'StripeAuthenticationError') {
-      errorMessage = 'Stripe authentication failed - check your secret key';
-    } else if (error.type === 'StripeConnectionError') {
-      errorMessage = 'Failed to connect to Stripe';
-    }
-    
-    res.status(500).json({ 
-      success: false, 
-      error: errorMessage,
-      details: error.message
-    });
-  }
-});
-
 // ========== PRODUCTS ENDPOINTS ==========
+
+// Get all products from Airtable
 app.get('/api/products', async (req, res) => {
   try {
     console.log('Fetching products from Airtable...');
@@ -156,7 +79,10 @@ app.get('/api/products', async (req, res) => {
       });
     }
 
-    // Use a simple fetch approach
+    console.log('Airtable Base ID:', process.env.AIRTABLE_BASE_ID ? '✓ Set' : '✗ Missing');
+    console.log('Airtable Token length:', process.env.AIRTABLE_TOKEN ? process.env.AIRTABLE_TOKEN.length : '✗ Missing');
+
+    // Use a simple fetch approach to avoid Airtable library issues
     const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Products`, {
       method: 'GET',
       headers: {
@@ -226,7 +152,162 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
+// ========== PAYMENT ENDPOINTS ==========
+
+// Create Stripe payment intent - FIXED: Removed *100 multiplication
+app.post('/api/create-payment-intent', async (req, res) => {
+  try {
+    const { amount, currency = 'usd', metadata } = req.body;
+    
+    console.log('Creating payment intent for amount:', amount, 'Type:', typeof amount);
+    
+    // Validate environment variables
+    if (!process.env.STRIPE_SECRET_KEY) {
+      console.error('Stripe secret key not configured');
+      return res.status(500).json({
+        success: false,
+        error: 'Payment system not configured'
+      });
+    }
+
+    // Validate amount
+    if (!amount || amount < 1) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid amount'
+      });
+    }
+
+    // FIXED: Use amount as-is (frontend should send amount in cents)
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(amount), // REMOVED: * 100 - frontend should send amount in cents
+      currency: currency,
+      metadata: metadata || {},
+      automatic_payment_methods: {
+        enabled: true,
+      },
+    });
+
+    console.log('Payment intent created:', paymentIntent.id);
+    console.log('Final amount charged:', paymentIntent.amount);
+    
+    res.json({ 
+      success: true, 
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id
+    });
+    
+  } catch (error) {
+    console.error('Error creating payment intent:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to create payment intent: ' + error.message
+    });
+  }
+});
+
 // ========== ORDER MANAGEMENT ==========
+
+// Save order to Airtable
+app.post('/api/save-order', async (req, res) => {
+  try {
+    const {
+      orderId,
+      customerName,
+      customerEmail,
+      customerPhone,
+      shippingAddress,
+      orderItems,
+      subtotal,
+      shipping,
+      tax,
+      serviceFee,
+      total,
+      paymentMethod,
+      stripePaymentId,
+      deliveryNotes,
+      orderNotes
+    } = req.body;
+
+    console.log('Saving order to Airtable:', orderId);
+
+    // Validate environment variables
+    if (!process.env.AIRTABLE_TOKEN || !process.env.AIRTABLE_BASE_ID) {
+      console.error('Airtable configuration missing');
+      return res.status(500).json({
+        success: false,
+        error: 'Server configuration error'
+      });
+    }
+
+    // Validate required fields
+    if (!orderId || !customerName || !customerEmail || !orderItems) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required order fields'
+      });
+    }
+
+    // Save to Airtable Sales table using direct API call
+    const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Sales`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        records: [
+          {
+            fields: {
+              'Order ID': orderId,
+              'Customer Name': customerName,
+              'Customer Email': customerEmail,
+              'Customer Phone': customerPhone || '',
+              'Shipping Address': shippingAddress,
+              'Order Items': JSON.stringify(orderItems),
+              'Subtotal': subtotal,
+              'Shipping': shipping,
+              'Tax': tax,
+              'Service Fee': serviceFee,
+              'Total': total,
+              'Payment Method': paymentMethod,
+              'Stripe Payment ID': stripePaymentId || '',
+              'Order Status': 'Paid',
+              'Order Date': new Date().toISOString(),
+              'Delivery Notes': deliveryNotes || '',
+              'Order Notes': orderNotes || ''
+            }
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Airtable API error: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    const recordId = result.records[0].id;
+    
+    console.log('Order saved successfully to Airtable. Record ID:', recordId);
+
+    res.json({ 
+      success: true, 
+      recordId,
+      orderId,
+      message: 'Order saved successfully'
+    });
+    
+  } catch (error) {
+    console.error('Error saving order to Airtable:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to save order: ' + error.message
+    });
+  }
+});
+
+// ========== COMPLETE ORDER PROCESSING ==========
 app.post('/api/orders', async (req, res) => {
   try {
     const {
@@ -240,6 +321,14 @@ app.post('/api/orders', async (req, res) => {
     console.log('Processing complete order for:', customer?.email);
 
     // Validate environment variables
+    if (!process.env.STRIPE_SECRET_KEY) {
+      console.error('Stripe secret key not configured');
+      return res.status(500).json({
+        success: false,
+        error: 'Payment system not configured'
+      });
+    }
+
     if (!process.env.AIRTABLE_TOKEN || !process.env.AIRTABLE_BASE_ID) {
       console.error('Airtable configuration missing');
       return res.status(500).json({
@@ -326,6 +415,8 @@ app.post('/api/orders', async (req, res) => {
 });
 
 // ========== ERROR HANDLING ==========
+
+// 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({
     success: false,
@@ -333,6 +424,7 @@ app.use('*', (req, res) => {
   });
 });
 
+// Global error handler
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
   res.status(500).json({
@@ -349,9 +441,8 @@ app.listen(PORT, () => {
 🚀 NepalGoods Backend Server Started!
 📍 Port: ${PORT}
 🌍 Environment: ${process.env.NODE_ENV || 'development'}
-🔐 Services: 
-   - Stripe: ${stripe ? '✅ Initialized' : '❌ Failed - check STRIPE_SECRET_KEY'}
-   - Airtable: ${process.env.AIRTABLE_TOKEN && process.env.AIRTABLE_BASE_ID ? '✅ Configured' : '❌ Missing credentials'}
+🔐 Services: Stripe & Airtable Integrated
+✅ Environment Variables: ${process.env.AIRTABLE_TOKEN ? '✓ Airtable' : '✗ Airtable'} ${process.env.STRIPE_SECRET_KEY ? '✓ Stripe' : '✗ Stripe'}
 ✅ Ready to accept requests...
   `);
 });
