@@ -154,12 +154,12 @@ app.get('/api/products', async (req, res) => {
 
 // ========== PAYMENT ENDPOINTS ==========
 
-// Create Stripe payment intent - FIXED: Removed *100 multiplication
+// Create Stripe payment intent
 app.post('/api/create-payment-intent', async (req, res) => {
   try {
     const { amount, currency = 'usd', metadata } = req.body;
     
-    console.log('Creating payment intent for amount:', amount, 'Type:', typeof amount);
+    console.log('Creating payment intent for amount:', amount);
     
     // Validate environment variables
     if (!process.env.STRIPE_SECRET_KEY) {
@@ -178,9 +178,8 @@ app.post('/api/create-payment-intent', async (req, res) => {
       });
     }
 
-    // FIXED: Use amount as-is (frontend should send amount in cents)
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount), // REMOVED: * 100 - frontend should send amount in cents
+      amount: Math.round(amount), // Convert to cents
       currency: currency,
       metadata: metadata || {},
       automatic_payment_methods: {
@@ -189,7 +188,6 @@ app.post('/api/create-payment-intent', async (req, res) => {
     });
 
     console.log('Payment intent created:', paymentIntent.id);
-    console.log('Final amount charged:', paymentIntent.amount);
     
     res.json({ 
       success: true, 
