@@ -154,12 +154,12 @@ app.get('/api/products', async (req, res) => {
 
 // ========== PAYMENT ENDPOINTS ==========
 
-// Create Stripe payment intent
+// Create Stripe payment intent - FIXED: Removed duplicate multiplication
 app.post('/api/create-payment-intent', async (req, res) => {
   try {
     const { amount, currency = 'usd', metadata } = req.body;
     
-    console.log('Creating payment intent for amount:', amount);
+    console.log('Creating payment intent for amount:', amount, 'cents');
     
     // Validate environment variables
     if (!process.env.STRIPE_SECRET_KEY) {
@@ -178,8 +178,9 @@ app.post('/api/create-payment-intent', async (req, res) => {
       });
     }
 
+    // FIXED: Use amount directly (already in cents from frontend)
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100), // Convert to cents
+      amount: amount, // Amount is already in cents from frontend
       currency: currency,
       metadata: metadata || {},
       automatic_payment_methods: {
