@@ -31,7 +31,8 @@ app.get('/', (req, res) => {
       products: '/api/products',
       stripeConfig: '/api/stripe-config',
       createPayment: '/api/create-payment-intent',
-      saveOrder: '/api/save-order'
+      saveOrder: '/api/save-order',
+      orders: '/api/orders'
     }
   });
 });
@@ -300,6 +301,113 @@ app.post('/api/save-order', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: 'Failed to save order: ' + error.message
+    });
+  }
+});
+
+// ========== COMPLETE ORDER PROCESSING ==========
+app.post('/api/orders', async (req, res) => {
+  try {
+    const {
+      customer,
+      shipping,
+      order,
+      payment,
+      notes
+    } = req.body;
+
+    console.log('Processing complete order for:', customer?.email);
+
+    // Validate environment variables
+    if (!process.env.STRIPE_SECRET_KEY) {
+      console.error('Stripe secret key not configured');
+      return res.status(500).json({
+        success: false,
+        error: 'Payment system not configured'
+      });
+    }
+
+    if (!process.env.AIRTABLE_TOKEN || !process.env.AIRTABLE_BASE_ID) {
+      console.error('Airtable configuration missing');
+      return res.status(500).json({
+        success: false,
+        error: 'Order system not configured'
+      });
+    }
+
+    // Validate required fields
+    if (!customer || !shipping || !order || !payment) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required order information'
+      });
+    }
+
+    // Generate order ID
+    const orderId = `NG${Date.now()}${Math.random().toString(36).substr(2, 5)}`.toUpperCase();
+
+    // Format shipping address
+    const shippingAddress = `${shipping.address}, ${shipping.city}, ${shipping.state} ${shipping.zip}, ${shipping.country}`;
+
+    console.log('Saving order to Airtable:', orderId);
+
+    // Save to Airtable
+    const airtableResponse = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Sales`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        records: [
+          {
+            fields: {
+              'Order ID': orderId,
+              'Customer Name': `${customer.firstName} ${customer.lastName}`,
+              'Customer Email': customer.email,
+              'Customer Phone': customer.phone || '',
+              'Shipping Address': shippingAddress,
+              'Order Items': JSON.stringify(order.items),
+              'Subtotal': order.subtotal,
+              'Shipping': order.shipping,
+              'Tax': order.tax,
+              'Service Fee': order.serviceFee,
+              'Total': order.total,
+              'Payment Method': payment.method,
+              'Stripe Payment ID': payment.id || '',
+              'Order Status': 'Paid',
+              'Order Date': new Date().toISOString(),
+              'Delivery Notes': shipping.notes || '',
+              'Order Notes': notes || ''
+            }
+          }
+        ]
+      })
+    });
+
+    if (!airtableResponse.ok) {
+      const errorText = await airtableResponse.text();
+      console.error('Airtable API error:', errorText);
+      throw new Error(`Airtable API error: ${airtableResponse.status}`);
+    }
+
+    const airtableResult = await airtableResponse.json();
+    const recordId = airtableResult.records[0].id;
+
+    console.log('Order saved successfully to Airtable. Record ID:', recordId);
+
+    res.json({ 
+      success: true, 
+      orderId,
+      recordId,
+      message: 'Order processed successfully'
+    });
+    
+  } catch (error) {
+    console.error('Error processing order:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to process order: ' + error.message
     });
   }
 });
