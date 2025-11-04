@@ -34,8 +34,9 @@ app.get('/', (req, res) => {
       stripeConfig: '/api/stripe-config',
       createPayment: '/api/create-payment-intent',
       orders: '/api/orders',
-      orderStatus: '/api/orders/:orderId/status',
-      testAirtable: '/api/test-airtable'
+      orderStatus: '/api/orders/:recordId/status',
+      testAirtable: '/api/test-airtable',
+      workstation: '/api/orders/workstation'
     }
   });
 });
@@ -296,7 +297,9 @@ app.post('/api/orders', async (req, res) => {
               'Order Date': new Date().toISOString(),
               'Delivery Notes': shipping.notes || '',
               'Order Notes': notes || '',
-              'Status Updated': new Date().toISOString()
+              'Status Updated': new Date().toISOString(),
+              'Assigned To': '', // Initialize empty staff assignment
+              'Tracking Number': '' // Initialize empty tracking number
             }
           }
         ]
@@ -349,14 +352,17 @@ app.post('/api/orders', async (req, res) => {
 
 // ========== ORDER STATUS MANAGEMENT ==========
 
-// Update order status
+// Update order status with staff assignment and tracking
 app.patch('/api/orders/:recordId/status', async (req, res) => {
   try {
     const { recordId } = req.params;
-    const { status, trackingNumber, notes } = req.body;
+    const { status, trackingNumber, notes, assignedTo } = req.body;
 
     console.log('🔄 Updating order status for record:', recordId);
     console.log('📊 New status:', status);
+    console.log('👤 Assigned to:', assignedTo);
+    console.log('📦 Tracking:', trackingNumber);
+    console.log('📝 Notes:', notes);
 
     // Valid statuses
     const validStatuses = [
@@ -389,10 +395,17 @@ app.patch('/api/orders/:recordId/status', async (req, res) => {
       updateFields['Tracking Number'] = trackingNumber;
     }
 
+    // Add staff assignment if provided
+    if (assignedTo) {
+      updateFields['Assigned To'] = assignedTo;
+    }
+
     // Add status notes if provided
     if (notes) {
       updateFields['Status Notes'] = notes;
     }
+
+    console.log('📋 Update fields:', updateFields);
 
     const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Sales`, {
       method: 'PATCH',
@@ -413,7 +426,17 @@ app.patch('/api/orders/:recordId/status', async (req, res) => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('❌ Airtable API error:', errorText);
-      throw new Error(`Failed to update order status: ${response.status}`);
+      
+      // Try to parse error for better messaging
+      let errorMessage = `Airtable API error: ${response.status}`;
+      try {
+        const errorData = JSON.parse(errorText);
+        errorMessage = errorData.error?.message || errorText;
+      } catch (e) {
+        errorMessage = errorText;
+      }
+      
+      throw new Error(errorMessage);
     }
 
     const result = await response.json();
@@ -424,6 +447,8 @@ app.patch('/api/orders/:recordId/status', async (req, res) => {
       message: `Order status updated to ${status}`,
       recordId: recordId,
       status: status,
+      assignedTo: assignedTo,
+      trackingNumber: trackingNumber,
       updatedAt: new Date().toISOString()
     });
 
@@ -471,7 +496,8 @@ app.get('/api/orders/:recordId/status', async (req, res) => {
       total: record.fields['Total'],
       orderDate: record.fields['Order Date'],
       statusUpdated: record.fields['Status Updated'],
-      trackingNumber: record.fields['Tracking Number'] || null
+      trackingNumber: record.fields['Tracking Number'] || null,
+      assignedTo: record.fields['Assigned To'] || null
     });
 
   } catch (error) {
@@ -479,6 +505,57 @@ app.get('/api/orders/:recordId/status', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: 'Failed to fetch order status: ' + error.message
+    });
+  }
+});
+
+// ========== ORDER WORKSTATION ENDPOINT ==========
+app.get('/api/orders/workstation', async (req, res) => {
+  try {
+    console.log('🏪 Fetching orders for workstation...');
+
+    const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Sales?sort[0][field]=Order Date&sort[0][direction]=desc`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Airtable API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    const orders = data.records.map(record => ({
+      recordId: record.id,
+      orderId: record.fields['Order ID'],
+      customerName: record.fields['Customer Name'],
+      customerEmail: record.fields['Customer Email'],
+      customerPhone: record.fields['Customer Phone'],
+      shippingAddress: record.fields['Shipping Address'],
+      orderItems: record.fields['Order Items'],
+      status: record.fields['Order Status'],
+      total: record.fields['Total'],
+      orderDate: record.fields['Order Date'],
+      statusUpdated: record.fields['Status Updated'],
+      trackingNumber: record.fields['Tracking Number'] || '',
+      assignedTo: record.fields['Assigned To'] || '', // This field must exist in Airtable
+      statusNotes: record.fields['Status Notes'] || '',
+      deliveryNotes: record.fields['Delivery Notes'] || '',
+      orderNotes: record.fields['Order Notes'] || ''
+    }));
+
+    console.log(`✅ Found ${orders.length} orders for workstation`);
+    
+    res.json({ success: true, orders });
+    
+  } catch (error) {
+    console.error('❌ Error fetching workstation orders:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch orders: ' + error.message
     });
   }
 });
@@ -548,35 +625,6 @@ app.get('/api/test-airtable', async (req, res) => {
   }
 });
 
-// ========== ORDER STATUS WEBHOOK (for automation) ==========
-
-// Webhook for automated status updates (optional)
-app.post('/api/webhooks/order-status', async (req, res) => {
-  try {
-    const { recordId, event, data } = req.body;
-    
-    console.log('🤖 Order status webhook triggered:', { recordId, event });
-
-    // You can implement automated status updates here
-    // For example:
-    // - Auto-update to "Processing" after 1 hour
-    // - Integration with shipping carriers
-    // - Inventory management updates
-
-    res.json({
-      success: true,
-      message: 'Webhook processed successfully'
-    });
-
-  } catch (error) {
-    console.error('❌ Webhook error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Webhook processing failed'
-    });
-  }
-});
-
 // ========== BULK ORDER STATUS UPDATE ==========
 
 // Update multiple orders status (admin function)
@@ -642,53 +690,62 @@ app.post('/api/orders/bulk-status-update', async (req, res) => {
   }
 });
 
-// ========== ORDER WORKSTATION ENDPOINT ==========
-app.get('/api/orders/workstation', async (req, res) => {
-  try {
-    console.log('🏪 Fetching orders for workstation...');
+// ========== ORDER STATUS WEBHOOK (for automation) ==========
 
-    const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Sales?sort[0][field]=Order Date&sort[0][direction]=desc`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
+// Webhook for automated status updates (optional)
+app.post('/api/webhooks/order-status', async (req, res) => {
+  try {
+    const { recordId, event, data } = req.body;
+    
+    console.log('🤖 Order status webhook triggered:', { recordId, event });
+
+    // You can implement automated status updates here
+    // For example:
+    // - Auto-update to "Processing" after 1 hour
+    // - Integration with shipping carriers
+    // - Inventory management updates
+
+    res.json({
+      success: true,
+      message: 'Webhook processed successfully'
     });
 
-    if (!response.ok) {
-      throw new Error(`Airtable API error: ${response.status}`);
-    }
+  } catch (error) {
+    console.error('❌ Webhook error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Webhook processing failed'
+    });
+  }
+});
 
-    const data = await response.json();
-    
-    const orders = data.records.map(record => ({
-      recordId: record.id,
-      orderId: record.fields['Order ID'],
-      customerName: record.fields['Customer Name'],
-      customerEmail: record.fields['Customer Email'],
-      customerPhone: record.fields['Customer Phone'],
-      shippingAddress: record.fields['Shipping Address'],
-      orderItems: record.fields['Order Items'],
-      status: record.fields['Order Status'],
-      total: record.fields['Total'],
-      orderDate: record.fields['Order Date'],
-      statusUpdated: record.fields['Status Updated'],
-      trackingNumber: record.fields['Tracking Number'] || '',
-      assignedTo: record.fields['Assigned To'] || '',
-      statusNotes: record.fields['Status Notes'] || '',
-      deliveryNotes: record.fields['Delivery Notes'] || '',
-      orderNotes: record.fields['Order Notes'] || ''
-    }));
+// ========== STAFF MANAGEMENT ENDPOINTS ==========
 
-    console.log(`✅ Found ${orders.length} orders for workstation`);
+// Get available staff members
+app.get('/api/staff', (req, res) => {
+  try {
+    console.log('👥 Fetching staff members...');
     
-    res.json({ success: true, orders });
+    // In a real application, this would come from your database
+    // For now, we'll return a static list
+    const staffMembers = [
+      { id: 'john', name: 'John Doe', email: 'john@nepalgoods.com', role: 'Manager' },
+      { id: 'jane', name: 'Jane Smith', email: 'jane@nepalgoods.com', role: 'Processor' },
+      { id: 'mike', name: 'Mike Johnson', email: 'mike@nepalgoods.com', role: 'Shipper' },
+      { id: 'sarah', name: 'Sarah Wilson', email: 'sarah@nepalgoods.com', role: 'Processor' },
+      { id: 'david', name: 'David Brown', email: 'david@nepalgoods.com', role: 'Shipper' }
+    ];
+
+    res.json({
+      success: true,
+      staff: staffMembers
+    });
     
   } catch (error) {
-    console.error('❌ Error fetching workstation orders:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch orders: ' + error.message
+    console.error('❌ Error fetching staff:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch staff members'
     });
   }
 });
@@ -707,8 +764,9 @@ app.use('*', (req, res) => {
       createPayment: 'POST /api/create-payment-intent',
       createOrder: 'POST /api/orders',
       updateStatus: 'PATCH /api/orders/:recordId/status',
+      workstation: 'GET /api/orders/workstation',
       testAirtable: 'GET /api/test-airtable',
-      workstation: 'GET /api/orders/workstation' // Add this too
+      staff: 'GET /api/staff'
     }
   });
 });
@@ -733,6 +791,8 @@ app.listen(PORT, () => {
 🌍 Environment: ${process.env.NODE_ENV || 'development'}
 🔐 Services: ${process.env.STRIPE_SECRET_KEY ? '✓ Stripe' : '✗ Stripe'} ${process.env.AIRTABLE_TOKEN ? '✓ Airtable' : '✗ Airtable'}
 📊 Order Status System: Active
+👤 Staff Assignment: Enabled
+📦 Tracking Numbers: Supported
 ✅ Available Statuses: Paid, Processing, Shipped, Delivered, Cancelled, Refunded, On Hold, Awaiting Information
 ✅ Ready to accept requests...
   `);
