@@ -642,35 +642,6 @@ app.post('/api/orders/bulk-status-update', async (req, res) => {
   }
 });
 
-// ========== ERROR HANDLING ==========
-
-// 404 handler
-app.use('*', (req, res) => {
-  console.log('❌ 404 - Endpoint not found:', req.originalUrl);
-  res.status(404).json({
-    success: false,
-    error: 'Endpoint not found',
-    path: req.originalUrl,
-    availableEndpoints: {
-      products: 'GET /api/products',
-      createPayment: 'POST /api/create-payment-intent',
-      createOrder: 'POST /api/orders',
-      updateStatus: 'PATCH /api/orders/:recordId/status',
-      testAirtable: 'GET /api/test-airtable'
-    }
-  });
-});
-
-// Global error handler
-app.use((error, req, res, next) => {
-  console.error('💥 Unhandled error:', error);
-  res.status(500).json({
-    success: false,
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
-  });
-});
-
 // ========== ORDER WORKSTATION ENDPOINT ==========
 app.get('/api/orders/workstation', async (req, res) => {
   try {
@@ -720,6 +691,36 @@ app.get('/api/orders/workstation', async (req, res) => {
       error: 'Failed to fetch orders: ' + error.message
     });
   }
+});
+
+// ========== ERROR HANDLING ==========
+
+// 404 handler - MUST BE AFTER ALL ROUTES
+app.use('*', (req, res) => {
+  console.log('❌ 404 - Endpoint not found:', req.originalUrl);
+  res.status(404).json({
+    success: false,
+    error: 'Endpoint not found',
+    path: req.originalUrl,
+    availableEndpoints: {
+      products: 'GET /api/products',
+      createPayment: 'POST /api/create-payment-intent',
+      createOrder: 'POST /api/orders',
+      updateStatus: 'PATCH /api/orders/:recordId/status',
+      testAirtable: 'GET /api/test-airtable',
+      workstation: 'GET /api/orders/workstation' // Add this too
+    }
+  });
+});
+
+// Global error handler
+app.use((error, req, res, next) => {
+  console.error('💥 Unhandled error:', error);
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+  });
 });
 
 // ========== SERVER STARTUP ==========
