@@ -671,6 +671,57 @@ app.use((error, req, res, next) => {
   });
 });
 
+// ========== ORDER WORKSTATION ENDPOINT ==========
+app.get('/api/orders/workstation', async (req, res) => {
+  try {
+    console.log('🏪 Fetching orders for workstation...');
+
+    const response = await fetch(`https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/Sales?sort[0][field]=Order Date&sort[0][direction]=desc`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.AIRTABLE_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Airtable API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    const orders = data.records.map(record => ({
+      recordId: record.id,
+      orderId: record.fields['Order ID'],
+      customerName: record.fields['Customer Name'],
+      customerEmail: record.fields['Customer Email'],
+      customerPhone: record.fields['Customer Phone'],
+      shippingAddress: record.fields['Shipping Address'],
+      orderItems: record.fields['Order Items'],
+      status: record.fields['Order Status'],
+      total: record.fields['Total'],
+      orderDate: record.fields['Order Date'],
+      statusUpdated: record.fields['Status Updated'],
+      trackingNumber: record.fields['Tracking Number'] || '',
+      assignedTo: record.fields['Assigned To'] || '',
+      statusNotes: record.fields['Status Notes'] || '',
+      deliveryNotes: record.fields['Delivery Notes'] || '',
+      orderNotes: record.fields['Order Notes'] || ''
+    }));
+
+    console.log(`✅ Found ${orders.length} orders for workstation`);
+    
+    res.json({ success: true, orders });
+    
+  } catch (error) {
+    console.error('❌ Error fetching workstation orders:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch orders: ' + error.message
+    });
+  }
+});
+
 // ========== SERVER STARTUP ==========
 const PORT = process.env.PORT || 3000;
 
